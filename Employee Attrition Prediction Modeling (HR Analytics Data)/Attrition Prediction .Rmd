@@ -1,0 +1,863 @@
+---
+title: "IBM EMPLOYEE ATTRITION"
+output: html_document
+date: "2023-07-20"
+---
+
+Import all the libraries:
+
+```{r}
+library(tidyverse)
+library(caret)
+library(tidyverse)
+library(caret)    
+library(ROSE)
+library(randomForest)
+library(e1071)
+library(pROC)
+library(ggplot2)
+library(scales)
+library(corrplot)
+library(glmnet) 
+```
+
+Load the data set and Data Preprocessing :
+
+```{r}
+## Load the data set
+
+df = read.csv("IBM HR Data new.csv")
+dim(df)
+head(df)
+
+## Rename column names
+
+names(df)[names(df) == "Application ID"] <- "Application_ID"
+names(df)[names(df) == "Employee Source"] <- "Employee_Source"
+
+## Remove duplicates
+
+duplicate_rows <- df[duplicated(df$Application_ID), ]
+
+## Print the duplicate rows
+
+print(duplicate_rows) ##### No duplicate rows in the dataset
+
+## Dropping unwanted columns
+
+drop_cols=c("Application.ID","EmployeeCount","EmployeeNumber",
+            "Employee.Source", "Over18" , "StandardHours")
+df[drop_cols]=NULL
+
+## Missing values
+
+df = df[complete.cases(df), ]
+summary(df)
+```
+
+```{r}
+## Other pre-processing steps
+
+quantitative_cols <- c("DistanceFromHome", "HourlyRate", "JobSatisfaction",
+                          "MonthlyIncome", "PercentSalaryHike")
+
+# Remove rows with string values in specific quantitative columns
+
+clean_df <- df[!rowSums(sapply(df[quantitative_cols], function(x) is.na(as.numeric(x)))), ]
+
+qualitative_cols <- c("Department", "EducationField", "Gender",
+                       "JobRole", "MaritalStatus")
+clean_df <- clean_df[!rowSums(sapply(clean_df[qualitative_cols], function(x) !is.na(as.numeric(x)))), ]
+clean_df = clean_df[complete.cases(clean_df), ]
+
+## Factorized
+
+clean_df$Attrition=factor(clean_df$Attrition,
+                          levels = c("Voluntary Resignation","Current employee"),
+                          labels = c("Voluntary_Resignation","Current_employee"))
+
+cols=c("BusinessTravel","Department","Education","EducationField","EnvironmentSatisfaction",
+       "Gender","JobLevel","JobRole","JobSatisfaction","MaritalStatus", "JobInvolvement",
+       "OverTime","PerformanceRating","RelationshipSatisfaction","StockOptionLevel",
+       "WorkLifeBalance")
+
+clean_df[cols] <- lapply(clean_df[cols], factor)
+
+clean_df$HourlyRate <- as.numeric(clean_df$HourlyRate)
+clean_df$MonthlyIncome <- as.numeric(clean_df$MonthlyIncome)
+clean_df$DistanceFromHome <- as.numeric(clean_df$DistanceFromHome)
+clean_df$PercentSalaryHike <- as.numeric(clean_df$PercentSalaryHike)
+clean_df[clean_df == ""] <- NA
+clean_df <- na.omit(clean_df)
+
+## Divide the data set into training and testing
+
+prop <- clean_df %>% select(Attrition) %>% group_by(Attrition) %>% summarize(n=n()) %>%
+  mutate(pct=round(prop.table(n), 2))
+
+set.seed(111)
+trainIndex <- createDataPartition(clean_df$Attrition, p=0.8, 
+                                  list=FALSE, times=1)
+train.data <- clean_df[trainIndex,]
+test.data<- clean_df[-trainIndex,]
+
+dim(train.data)
+dim(test.data)
+```
+
+Exploratory Data Analysis :
+
+```{r}
+data1 = clean_df
+data1$Attrition<-factor(data1$Attrition,
+                         levels = c("Voluntary_Resignation","Current_employee"),
+                         labels = c("Voluntary Resignation","Current Employee"))
+data1$Education = factor(data1$Education,
+                          levels = c(1,2,3,4,5),
+                          labels = c('Below College', 'College','Bachelor'
+                                     ,'Master','Doctor'))
+data1$EnvironmentSatisfaction=factor(data1$EnvironmentSatisfaction,
+                                      levels = c(1,2,3,4),
+                                      labels=c('low','Medium','High','Very High'))
+
+cols=c("Education","Department","EnvironmentSatisfaction")
+data1[cols] <- lapply(data1[cols], factor)
+
+## Attrition
+
+counts <- table(data1$Attrition)
+df <- data.frame(categories = names(counts), count = as.numeric(counts))
+
+ggplot(data = df, aes(x = categories, y = count, fill = categories)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  geom_text(aes(label = count), vjust = -0.5, fontface = "bold", size = 4) +
+  labs(x = "Categories", y = "Count") +
+  scale_fill_manual(values = c("#2196F3", "#4CAF50")) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 9, face = "bold"),
+        axis.text = element_text(size = 7, face = "bold"),
+        legend.position = "none")
+
+## Monthly Income
+
+qplot(MonthlyIncome,data = data1,geom = "histogram")
+
+## Percent Salary Hike
+
+qplot(PercentSalaryHike,data = data1,geom = "histogram")
+
+## Age vs Gender
+
+mean_data <- aggregate(Age ~ Gender, data1, mean)
+ggplot(data1, aes(x = Age, fill = Gender)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(data = mean_data, aes(xintercept = Age, color = Gender),
+             linetype = "dashed", size = 1) +
+  labs(title = "Age Distribution along with Gender", x = "Age", y = "Density") +
+  scale_fill_manual(values = c("blue", "pink")) +
+  scale_color_manual(values = c("blue", "pink")) +
+  theme_minimal()
+
+## Gender vs Attrition
+
+percentage_data <- with(data1, prop.table(table(Gender, Attrition), 1) * 100)
+percentage_df <- as.data.frame(percentage_data)
+ggplot(percentage_df, aes(x = Gender, y = Freq, fill = Attrition)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = sprintf("%.1f%%", Freq)), position = position_dodge(width = 0.9), vjust = -0.5) +
+  labs(title = "Attrition by Gender",
+       x = "Gender", y = "Percentage",
+       fill = "Attrition") +
+  scale_fill_manual(values = c("Yes" = "red", "No" = "blue")) +
+  scale_y_continuous(labels = percent_format(scale = 1)) +
+  theme_minimal()
+
+
+## Dep, ENV sat, Gender
+
+data1=read.csv("cleaned_data.csv")
+data1$Attrition<-factor(data1$Attrition,
+                        levels = c("Voluntary_Resignation","Current_employee"),
+                        labels = c("Voluntary Resignation","Current Employee"))
+data1$EnvironmentSatisfaction <- as.numeric(data1$EnvironmentSatisfaction)
+averaged_data <- data1 %>%
+  group_by(Department, Gender) %>%
+  summarize(Average_Value = mean(EnvironmentSatisfaction))
+ggplot(averaged_data, aes(x = Department, y = Average_Value, group = Gender, color = Gender)) +
+  geom_line() +
+  labs(x = "Department", y = "Average Environmental Satisfaction",
+       color = "Gender") +
+  theme_minimal()
+
+
+## Business Travel vs Environment Satisfaction
+
+ggplot(data1, aes(fill = EnvironmentSatisfaction, x = BusinessTravel)) +
+  geom_bar(position = "fill")
+
+## Attrition vs Environment Satisfaction
+
+ggplot(data1, aes(fill = Attrition, x = EnvironmentSatisfaction)) +
+  geom_bar(position = "fill") + labs(y = "Percentage") 
+
+## Attrition vs Department
+
+ggplot(data1, aes(fill = Attrition, x = Department)) +
+  geom_bar(position = "fill") + labs(y = "Percentage") 
+
+## Attrition vs Education
+
+ggplot(data1, aes(fill = Attrition, x = Education)) +
+  geom_bar(position = "fill") + labs(y = "Percentage") 
+
+## Attrition vs Education Field
+
+ggplot(data1, aes(fill = Attrition, x = EducationField)) +
+  geom_bar(position = "fill") + labs(y = "Percentage") 
+
+## Attrition vs Marital Status
+
+data1$Attrition=as.factor(data1$Attrition)
+data1$MaritalStatus=as.factor(data1$MaritalStatus)
+p8=ggplot(data = data1,aes(x=Attrition,y=Age,fill=MaritalStatus))+geom_boxplot()+scale_x_discrete(labels=c("1"="Voluntary Resign","2"="Current Employees"))
+p8
+
+## Education, Monthly Income vs Attrition
+
+data1$Attrition=as.factor(data1$Attrition)
+data1$Education=as.factor(data1$Education)
+p7=ggplot(data = data1,aes(x=Attrition,y=MonthlyIncome,fill=Education))+geom_boxplot()+scale_x_discrete(labels=c("1"="Voluntary Resign","2"="Current Employees"))
+p7
+
+## Department, Monthly Income vs Attrition
+
+data1$Attrition=as.factor(data1$Attrition)
+data1$Education=as.factor(data1$Department)
+p7=ggplot(data = data1,aes(x=Attrition,y=MonthlyIncome,fill=Department))+geom_boxplot()+scale_x_discrete(labels=c("1"="Voluntary Resign","2"="Current Employees"))
+p7
+
+## StockOptionLevel, Monthly Income vs Attrition
+
+data1$Attrition=as.factor(data1$Attrition)
+data1$StockOptionLevel=as.factor(data1$StockOptionLevel)
+p9=ggplot(data = data1,aes(x=Attrition,y=MonthlyIncome,fill=StockOptionLevel))+geom_boxplot()+scale_x_discrete(labels=c("1"="Voluntary Resign","2"="Current Employees"))
+p9
+
+```
+
+Check for multicolinearity
+
+```{r}
+
+cor_columns <- c("YearsSinceLastPromotion","YearsInCurrentRole","YearsAtCompany",
+                 "TrainingTimesLastYear", "TotalWorkingYears","PercentSalaryHike",
+                 "NumCompaniesWorked","MonthlyRate","MonthlyIncome",
+                 "HourlyRate","DistanceFromHome","DailyRate","Age")
+
+cor_cot <- train.data %>% select(all_of(cor_columns))
+cor_matrix <- cor(cor_cot, method = "spearman")
+
+corrplot(cor_matrix, method = "color", addCoef.col = "black", tl.col = "black",
+         tl.cex = 0.6, tl.srt = 45)
+
+```
+
+In this context, we observe the presence of multicollinearity among variables. To address this issue, we can opt for ridge and lasso regression as alternatives to logistic regression. These regularization techniques help mitigate the impact of multicollinearity and provide more robust model estimates. Instead of logistic model, we can fit ridge, lasso and e-net regression models.
+
+
+Statistical Models:
+
+```{r}
+
+data1=train.data
+data2=test.data
+
+cols <- c("BusinessTravel","Department","Education","EducationField","EnvironmentSatisfaction",
+          "Gender","JobLevel","JobRole","JobSatisfaction","MaritalStatus", "JobInvolvement",
+          "OverTime","PerformanceRating","RelationshipSatisfaction","StockOptionLevel",
+          "WorkLifeBalance")
+
+for (col in cols) {
+  data1[[col]] <- as.integer(factor(data1[[col]], levels = unique(data1[[col]])))
+  data2[[col]] <- as.integer(factor(data2[[col]], levels = unique(data2[[col]])))
+}
+
+data1[cols] <- lapply(data1[cols], factor)
+data2[cols] <- lapply(data2[cols], factor)
+
+data1$Attrition<-factor(data1$Attrition,
+                        levels = c('Voluntary_Resignation','Current_employee'),
+                        labels = c(0,1))
+
+data2$Attrition<-factor(data2$Attrition,
+                        levels = c('Voluntary_Resignation','Current_employee'),
+                        labels = c(0,1))
+
+# Remove level 1 from 'EducationField'
+data2$EducationField <- droplevels(data2$EducationField, exclude = "7")
+data2 <- na.omit(data2)
+
+x=model.matrix(Attrition ~.,data = data1)[,-1]
+y=data1$Attrition
+
+####################################################################################
+#            ridge                                                                 #       
+####################################################################################
+
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+set.seed(111)
+
+ridge.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda))
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(ridge.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+
+####################################################################################
+#                  lasso                                                           #
+####################################################################################
+
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+
+set.seed(111)
+lasso.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  
+)
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(lasso.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+
+###################################################################################
+#                 elastic-net                                                     #
+###################################################################################
+
+
+# for reproducibility
+set.seed(111)
+
+# grid search across 
+elastic.model <- train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial"
+)
+
+
+# Make predictions on the test data
+probabilities <- predict(elastic.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+```
+
+During the exploratory data analysis (EDA), we observed that the response variable is not balanced, which may be contributing to the lower sensitivity To address this class imbalance issue and improve the model's performance, we can apply various sampling techniques. Here are three common approaches:
+
+1. **Over-sampling**: Over-sampling involves increasing the number of instances of the minority class (less frequent class) by generating synthetic samples. This can be done using techniques like duplication, bootstrapping, or the Synthetic Minority Over-sampling Technique (SMOTE).
+
+2. **Under-sampling**: Under-sampling, on the other hand, involves reducing the number of instances of the majority class (more frequent class) to achieve a balanced dataset. This can be done randomly or using specific techniques like the Tomek links method.
+
+3. **Synthetic-sampling**: Synthetic sampling generates new instances of the minority class by creating synthetic examples based on the existing data. The most common method for synthetic sampling is SMOTE, which creates synthetic samples by interpolating between existing minority class samples.
+
+By applying one or a combination of these sampling techniques, we can balance the response variable and improve the model's ability to correctly classify instances of both classes, thus potentially improving the specificity and overall performance of the model. It is important to carefully evaluate the performance of the models after applying the sampling technique(s) to ensure that the results are meaningful and not biased due to the sampling process.
+
+01) Over-sampling
+
+```{r}
+
+#Oversampling
+
+data_balanced_over <- ovun.sample(Attrition ~ ., data = data1, method = "over",N = 30968,seed = 1)$data
+x=model.matrix(Attrition~.,data_balanced_over)[,-1]
+y=data_balanced_over$Attrition
+
+####################################################################################
+#            ridge                                                                 #       
+####################################################################################
+
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+set.seed(111)
+
+ridge.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda))
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(ridge.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+observed.classes=data2$Attrition
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+
+####################################################################################
+#                  lasso                                                           #
+####################################################################################
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+
+set.seed(111)
+lasso.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  
+)
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(lasso.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+
+###################################################################################
+#                 elastic-net                                                     #
+###################################################################################
+
+
+# for reproducibility
+set.seed(111)
+
+# grid search across 
+elastic.model <- train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial"
+)
+
+
+# Make predictions on the test data
+probabilities <- predict(elastic.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+```
+
+02) Under-sampling
+
+```{r}
+
+#Undersampling
+
+data_balanced_under <- ovun.sample(Attrition ~ ., data = data1, method = "under",N =5756 , seed = 1)$data
+x=model.matrix(Attrition~.,data_balanced_under)[,-1]
+y=data_balanced_under$Attrition
+
+
+####################################################################################
+#            ridge                                                                 #       
+####################################################################################
+
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+set.seed(111)
+
+ridge.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda))
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(ridge.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+observed.classes=data2$Attrition
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+
+
+####################################################################################
+#                  lasso                                                           #
+####################################################################################
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+
+set.seed(111)
+lasso.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  
+)
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(lasso.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+
+
+###################################################################################
+#                 elastic-net                                                     #
+###################################################################################
+
+
+# for reproducibility
+set.seed(111)
+
+# grid search across 
+elastic.model <- train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial"
+)
+
+
+# Make predictions on the test data
+probabilities <- predict(elastic.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+```
+
+03) Synthetic sampling
+
+```{r}
+#synthatic sampling
+data.rose <- ROSE(Attrition ~ ., data = data1, seed = 1)$data
+x=model.matrix(Attrition~.,data.rose)[,-1]
+y=data.rose$Attrition
+
+####################################################################################
+#            ridge                                                                 #       
+####################################################################################
+
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+set.seed(111)
+
+ridge.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda))
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(ridge.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+observed.classes=data2$Attrition
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+
+
+####################################################################################
+#                  lasso                                                           #
+####################################################################################
+#cross validation to select best lambda
+lambda<-10^seq(-3,3,length=100)
+
+set.seed(111)
+lasso.model<-train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  
+)
+
+
+# Make predictions on the test data
+x.test <- model.matrix(Attrition ~., data2)[,-1]
+probabilities <- predict(lasso.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+
+###################################################################################
+#                 elastic-net                                                     #
+###################################################################################
+
+
+# for reproducibility
+set.seed(111)
+
+# grid search across 
+elastic.model <- train(
+  x = x,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10,
+  family="binomial"
+)
+
+
+# Make predictions on the test data
+probabilities <- predict(elastic.model,x.test, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,observed.classes))
+
+```
+
+Machine Learning Models:
+
+01) Decision Tree
+
+```{r}
+
+
+
+########################### No sampling techniques ###########################################
+set.seed(111)
+model1=train(
+  Attrition~.,data = data1,method = "rpart",
+  trControl = trainControl("cv",number = 10),
+  tuneLength = 20
+)
+
+predicted.classes=model1 %>% predict(data2)
+predictions=model1 %>% predict(data2,type = "raw")
+confusionMatrix(predictions,data2$Attrition)
+
+
+############################### over-sampling ##################################################
+data_balanced_over <- ovun.sample(Attrition ~ ., data = data1, method = "over",N = 30968)$data
+
+set.seed(111)
+model2=train(
+  Attrition~.,data = data_balanced_over,method = "rpart",
+  trControl = trainControl("cv",number = 10),
+  tuneLength = 20
+)
+
+predicted.classes=model2 %>% predict(data2)
+predictions=model2 %>% predict(data2,type = "raw")
+confusionMatrix(predictions,data2$Attrition)
+
+############################### under-sampling #################################################
+data_balanced_under <- ovun.sample(Attrition ~ ., data = data1, method = "under",N =5756 , seed = 1)$data
+
+set.seed(111)
+model3=train(
+  Attrition~.,data = data_balanced_under,method = "rpart",
+  trControl = trainControl("cv",number = 10),
+  tuneLength = 20
+)
+
+predicted.classes=model3 %>% predict(data2)
+predictions=model3 %>% predict(data2,type = "raw")
+confusionMatrix(predictions,data2$Attrition)
+```
+
+02) Random Forest
+
+```{r}
+
+#################################### No sampling ##################################
+
+set.seed(111)
+model1=randomForest(formula=Attrition~.,data = data1)
+predictions=model1 %>% predict(data2,type = "class")
+confusionMatrix(predictions,data2$Attrition)
+
+############################### over-sampling #####################################
+
+data3<- ovun.sample(Attrition ~ ., data = data1, method = "over",N =30968)$data
+set.seed(111)
+model2=randomForest(formula=Attrition~.,data = data3,importance=TRUE)
+predictions=model2 %>% predict(data2,type = "class")
+confusionMatrix(predictions,data2$Attrition)
+
+
+############################### under-sampling #####################################
+
+data4 <- ovun.sample(Attrition ~ ., data = data1, method = "under",N =5756,seed = 1)$data
+set.seed(111)
+model3=randomForest(formula=Attrition~.,data = data4,importance=TRUE)
+predictions=model3 %>% predict(data2,type = "class")
+confusionMatrix(predictions,data2$Attrition)
+```
+
+03) XGBoost model
+
+```{r}
+############################### No sampling techniques ##################################
+
+set.seed(111)
+model3=train(
+  Attrition~.,data = data1,method = "xgbTree",
+  trControl = trainControl("cv",number = 2),
+  tuneLength = 2
+)
+
+# Make predictions on the test data
+probabilities <- model3 %>% predict(data2, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+
+############################### Under-sampling ##################################
+
+data3 <- ovun.sample(Attrition ~ ., data = data1, method = "under",N =5756,seed = 1)$data
+
+set.seed(111)
+model1=train(
+  Attrition~.,data = data3,method = "xgbTree",
+  trControl = trainControl("cv",number = 2),
+  tuneLength = 2
+)
+
+# Make predictions on the test data
+probabilities <- model1 %>% predict(data2, type = "raw")
+probabilities <- ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+
+
+############################### Over-sampling ##################################
+
+data4 <- ovun.sample(Attrition ~ ., data = data1, method = "over",N =30968)$data
+
+set.seed(111)
+model2=train(
+  Attrition~.,data = data4,method = "xgbTree",
+  trControl = trainControl("cv",number = 2),
+  tuneLength = 2
+)
+
+# Make predictions on the test data
+probabilities <- model2 %>% predict(data2, type = "raw")
+probabilities<-ordered(probabilities, levels=c("0","1"))
+
+# Model accuracy
+confusionMatrix(table(probabilities,data2$Attrition))
+```
+
+Select the best Model: Upon evaluating all the employed statistical and machine learning models, it is evident that the Random Forest model with under-sampling technique outperforms the others. It demonstrates commendable overall accuracy, sensitivity, and specificity values. Let's proceed to analyze performance metrics for this model.
+
+```{r}
+
+
+data4 <- ovun.sample(Attrition ~ ., data = data1, method = "under",N =5756,seed = 1)$data
+set.seed(111)
+model3=randomForest(formula=Attrition~.,data = data4,importance=TRUE)
+predictions=model3 %>% predict(data2,type = "class")
+probabilities<-ordered(predictions, levels=c("0","1"))
+
+## Confusion Matrix
+confusionMatrix(predictions,data2$Attrition)
+
+## ROC Curve
+roc_obj <- roc(data2$Attrition, as.numeric(predictions))
+auc_value <- auc(roc_obj)
+roc_data <- data.frame(1 - roc_obj$specificities, roc_obj$sensitivities)
+roc_plot <- ggplot(roc_data, aes(x = 1 - roc_obj$specificities, y = roc_obj$sensitivities)) +
+  geom_line(color = "blue", size = 2) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") +
+  labs(title = "ROC Curve", x = "False Positive Rate", y = "True Positive Rate") +
+  theme_minimal()
+roc_plot_with_auc <- roc_plot +
+  geom_text(x = 0.5, y = 0.3, label = paste("AUC =", round(auc_value, 2)), color = "red")
+print(roc_plot_with_auc)
+
+## VIP Plot
+var_importance <- importance(model3)
+var_importance <- var_importance[order(-var_importance[, 1]), , drop = FALSE]
+barplot(var_importance[, 1], names.arg = rownames(var_importance), las = 2, col = "steelblue",
+        main = "Mean Decrease Gini: Variable Importance Plot",
+        ylab = "Mean Decrease Gini")
+```
